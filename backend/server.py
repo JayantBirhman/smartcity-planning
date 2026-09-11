@@ -279,6 +279,156 @@ def build_proposals(pop: int, site: float, zones: List[Dict]) -> List[Dict]:
     }
     return [balanced, sustain]
 
+# ---------- Site Boundary Geometry ----------
+from shapely.geometry import Polygon as ShpPolygon, MultiPolygon, box as shp_box, shape as shp_shape, Point as ShpPoint
+from shapely.ops import unary_union
+
+M_PER_DEG_LAT = 110540.0
+M_PER_DEG_LNG = 111320.0
+
+def _to_local(coords, lat0: float, lng0: float):
+    k = math.cos(math.radians(lat0))
+    return [((lng - lng0) * M_PER_DEG_LNG * k, (lat - lat0) * M_PER_DEG_LAT) for lng, lat in coords]
+
+def _to_latlng(poly, lat0: float, lng0: float):
+    k = math.cos(math.radians(lat0))
+    rings = []
+    parts = poly.geoms if isinstance(poly, MultiPolygon) else [poly]
+    for part in parts:
+        if part.is_empty:
+            continue
+        rings.append([[lat0 + y / M_PER_DEG_LAT, lng0 + x / (M_PER_DEG_LNG * k)]
+                      for x, y in part.exterior.coords])
+    return rings
+
+def extract_boundary(geojson: Dict[str, Any]) -> List[List[float]]:
+    """Returns the largest polygon ring as [[lng, lat], ...]."""
+    geoms = []
+    def collect(node):
+        t = node.get("type")
+        if t == "FeatureCollection":
+            for f in node.get("features", []):
+                collect(f)
+        elif t == "Feature":
+            if node.get("geometry"):
+                collect(node["geometry"])
+        elif t in ("Polygon", "MultiPolygon", "GeometryCollection"):
+            if t == "GeometryCollection":
+                for g in node.get("geometries", []):
+                    collect(g)
+            else:
+                geoms.append(shp_shape(node))
+    collect(geojson)
+    if not geoms:
+        raise HTTPException(status_code=400, detail="No Polygon geometry found in the GeoJSON file")
+    merged = unary_union(geoms)
+    parts = list(merged.geoms) if isinstance(merged, MultiPolygon) else [merged]
+    largest = max(parts, key=lambda p: p.area)
+    return [[round(x, 7), round(y, 7)] for x, y in largest.exterior.coords]
+
+def _cut(poly, frac: float, vertical: bool):
+    minx, miny, maxx, maxy = poly.bounds
+    lo, hi = (minx, maxx) if vertical else (miny, maxy)
+    target = poly.area * frac
+    for _ in range(36):
+        mid = (lo + hi) / 2
+        clip = shp_box(minx, miny, mid, maxy) if vertical else shp_box(minx, miny, maxx, mid)
+        if poly.intersection(clip).area < target:
+            lo = mid
+        else:
+            hi = mid
+    mid = (lo + hi) / 2
+    clip = shp_box(minx, miny, mid, maxy) if vertical else shp_box(minx, miny, maxx, mid)
+    return poly.intersection(clip), poly.difference(clip)
+
+def slice_polygon(poly, items: List[tuple]) -> List[tuple]:
+    """Treemap-style slicing: items = [(key, weight)] -> [(key, polygon)] clipped inside poly."""
+    if len(items) == 1 or poly.is_empty:
+        return [(items[0][0], poly)] if items else []
+    total = sum(w for _, w in items) or 1
+    acc, idx = 0.0, 1
+    for i, (_, w) in enumerate(items):
+        if acc + w / 2 >= total / 2:
+            idx = max(1, i)
+            break
+        acc += w
+        idx = i + 1
+    idx = min(idx, len(items) - 1)
+    left, right = items[:idx], items[idx:]
+    frac = sum(w for _, w in left) / total
+    minx, miny, maxx, maxy = poly.bounds
+    p1, p2 = _cut(poly, frac, (maxx - minx) >= (maxy - miny))
+    return slice_polygon(p1, left) + slice_polygon(p2, right)
+
+def sample_points_in(poly, count: int, lat0: float, lng0: float) -> List[List[float]]:
+    if count <= 0 or poly.is_empty:
+        return []
+    minx, miny, maxx, maxy = poly.bounds
+    k = math.cos(math.radians(lat0))
+    pts = []
+    # Halton-style low-discrepancy sampling with rejection — avoids visible grid patterns
+    def halton(i: int, base: int) -> float:
+        f, r = 1.0, 0.0
+        while i > 0:
+            f /= base
+            r += f * (i % base)
+            i //= base
+        return r
+    i = 1
+    while len(pts) < count and i < count * 400:
+        x = minx + (maxx - minx) * halton(i, 2)
+        y = miny + (maxy - miny) * halton(i, 3)
+        i += 1
+        if poly.contains(ShpPoint(x, y)):
+            pts.append([lat0 + y / M_PER_DEG_LAT, lng0 + x / (M_PER_DEG_LNG * k)])
+    return pts
+
+def build_geometry_from_boundary(ring: List[List[float]], zones: List[Dict], infra: Dict) -> Dict[str, Any]:
+    lats = [c[1] for c in ring]
+    lngs = [c[0] for c in ring]
+    lat0, lng0 = sum(lats) / len(lats), sum(lngs) / len(lngs)
+    local = ShpPolygon(_to_local(ring, lat0, lng0))
+    if not local.is_valid:
+        local = local.buffer(0)
+    if local.is_empty or local.area <= 0:
+        raise HTTPException(status_code=400, detail="Boundary polygon has no area")
+    area_sqkm = round(local.area / 1_000_000, 4)
+
+    sliced = dict(slice_polygon(local, [(z["id"], z["percentage"]) for z in zones]))
+    for z in zones:
+        part = sliced.get(z["id"])
+        if part is None or part.is_empty:
+            z["polygons"] = []
+            continue
+        z["polygons"] = _to_latlng(part, lat0, lng0)
+        z["area_sqkm"] = round(part.area / 1_000_000, 4)
+
+    def zone_poly(*types):
+        parts = [sliced[z["id"]] for z in zones if z["type"] in types and z["id"] in sliced]
+        parts = [p for p in parts if p and not p.is_empty]
+        return unary_union(parts) if parts else local
+
+    schools_area = zone_poly("residential", "institutional")
+    hospitals_area = zone_poly("residential", "commercial")
+    green_area = zone_poly("parks_green")
+    infra_points = []
+    for pt in sample_points_in(schools_area, min(infra["schools"]["required"], 24), lat0, lng0):
+        infra_points.append({"type": "school", "label": "School", "color": "#2563EB", "lat": pt[0], "lng": pt[1]})
+    for pt in sample_points_in(hospitals_area, min(infra["hospitals"]["required"], 12), lat0, lng0):
+        infra_points.append({"type": "hospital", "label": "Hospital", "color": "#DC2626", "lat": pt[0], "lng": pt[1]})
+    for pt in sample_points_in(green_area, min(infra["parks"]["required"], 18), lat0, lng0):
+        infra_points.append({"type": "park", "label": "Park", "color": "#059669", "lat": pt[0], "lng": pt[1]})
+    for i, p in enumerate(infra_points):
+        p["id"] = f"{p['type']}-{i}"
+
+    return {
+        "zones": zones,
+        "area_sqkm": area_sqkm,
+        "centroid": {"lat": lat0, "lng": lng0},
+        "boundary_latlngs": [[c[1], c[0]] for c in ring],
+        "infra_points": infra_points,
+    }
+
 # ---------- Auth Routes ----------
 @api_router.post("/auth/register")
 async def register(body: RegisterIn):
@@ -561,6 +711,102 @@ async def project_risks(pid: str, user=Depends(get_current_user)):
 @api_router.get("/rules")
 async def get_rules():
     return PLANNING_RULES
+
+class BoundaryIn(BaseModel):
+    geojson: Dict[str, Any]
+    source_name: Optional[str] = None
+
+@api_router.put("/projects/{pid}/boundary")
+async def set_boundary(pid: str, body: BoundaryIn, user=Depends(get_current_user)):
+    doc = await db.projects.find_one({"id": pid, "user_id": user["id"]}, {"_id": 0})
+    if not doc:
+        raise HTTPException(status_code=404, detail="Project not found")
+    ring = extract_boundary(body.geojson)
+    pop = doc["population"]["forecast_population"]
+    zones = compute_zoning(doc["site_area_sqkm"], pop)
+    geo = build_geometry_from_boundary(ring, zones, doc["infrastructure"])
+    sust = compute_sustainability(pop, geo["area_sqkm"])
+    score = compute_score(doc["infrastructure"], sust)
+    update = {
+        "zones": geo["zones"],
+        "site_area_sqkm": geo["area_sqkm"],
+        "sustainability": sust,
+        "score": score,
+        "infra_points": geo["infra_points"],
+        "location": {**doc["location"], "lat": geo["centroid"]["lat"], "lng": geo["centroid"]["lng"]},
+        "boundary": {
+            "ring": ring,
+            "latlngs": geo["boundary_latlngs"],
+            "area_sqkm": geo["area_sqkm"],
+            "source_name": body.source_name,
+            "uploaded_at": now_iso(),
+        },
+        "updated_at": now_iso(),
+    }
+    await db.projects.update_one({"id": pid}, {"$set": update})
+    return await db.projects.find_one({"id": pid}, {"_id": 0})
+
+@api_router.delete("/projects/{pid}/boundary")
+async def clear_boundary(pid: str, user=Depends(get_current_user)):
+    doc = await db.projects.find_one({"id": pid, "user_id": user["id"]}, {"_id": 0})
+    if not doc:
+        raise HTTPException(status_code=404, detail="Project not found")
+    area = doc["inputs"]["site_area_sqkm"]
+    pop = doc["population"]["forecast_population"]
+    sust = compute_sustainability(pop, area)
+    await db.projects.update_one({"id": pid}, {
+        "$set": {"zones": compute_zoning(area, pop), "site_area_sqkm": area,
+                 "sustainability": sust, "score": compute_score(doc["infrastructure"], sust),
+                 "updated_at": now_iso()},
+        "$unset": {"boundary": "", "infra_points": ""},
+    })
+    return await db.projects.find_one({"id": pid}, {"_id": 0})
+
+class AutodeskLinkIn(BaseModel):
+    hub_id: str
+    hub_name: Optional[str] = None
+    aps_project_id: str
+    aps_project_name: Optional[str] = None
+    root_folder: Optional[str] = None
+
+@api_router.put("/projects/{pid}/autodesk-link")
+async def link_autodesk(pid: str, body: AutodeskLinkIn, user=Depends(get_current_user)):
+    doc = await db.projects.find_one({"id": pid, "user_id": user["id"]}, {"_id": 0})
+    if not doc:
+        raise HTTPException(status_code=404, detail="Project not found")
+    await get_aps_access_token(user["id"])  # 409 if not connected
+    link = {**body.model_dump(), "linked_at": now_iso(), "last_synced_at": None}
+    await db.projects.update_one({"id": pid}, {"$set": {"autodesk": link, "updated_at": now_iso()}})
+    return link
+
+@api_router.delete("/projects/{pid}/autodesk-link")
+async def unlink_autodesk(pid: str, user=Depends(get_current_user)):
+    await db.projects.update_one({"id": pid, "user_id": user["id"]}, {"$unset": {"autodesk": ""}})
+    return {"ok": True}
+
+@api_router.get("/projects/{pid}/autodesk-contents")
+async def linked_autodesk_contents(pid: str, folder_id: Optional[str] = None, user=Depends(get_current_user)):
+    doc = await db.projects.find_one({"id": pid, "user_id": user["id"]}, {"_id": 0})
+    if not doc or not doc.get("autodesk"):
+        raise HTTPException(status_code=404, detail="No Autodesk project linked to this plan")
+    link = doc["autodesk"]
+    folder = folder_id or link.get("root_folder")
+    if not folder:
+        raise HTTPException(status_code=400, detail="Linked Autodesk project has no root folder")
+    data = await aps_get(user["id"],
+                         f"/data/v1/projects/{urllib.parse.quote(link['aps_project_id'], safe='')}"
+                         f"/folders/{urllib.parse.quote(folder, safe='')}/contents")
+    items = []
+    for item in data.get("data", []):
+        attrs = item.get("attributes", {})
+        items.append({"id": item["id"], "type": item.get("type"),
+                      "name": attrs.get("displayName") or attrs.get("name"),
+                      "extension": attrs.get("extension", {}).get("type", ""),
+                      "updated_at": attrs.get("lastModifiedTime")})
+    synced = now_iso()
+    await db.projects.update_one({"id": pid}, {"$set": {"autodesk.last_synced_at": synced}})
+    return {"folder_id": folder, "items": items, "last_synced_at": synced,
+            "root_folder": link.get("root_folder")}
 
 # ---------- Chatbot ----------
 def build_system_prompt(project: Optional[Dict], zone_ctx: Optional[Dict]) -> str:

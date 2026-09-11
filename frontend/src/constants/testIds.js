@@ -23,6 +23,7 @@ export const NAV = {
   sidebarBlueprint: "sidebar-blueprint",
   sidebarReports: "sidebar-reports",
   sidebarIntegrations: "sidebar-integrations",
+  sidebarProjectAutodesk: "sidebar-project-autodesk",
   logout: "logout-btn",
   globalSearch: "global-search",
 };

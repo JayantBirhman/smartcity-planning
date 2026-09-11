@@ -16,6 +16,7 @@ import Proposals from "@/pages/Proposals";
 import Risks from "@/pages/Risks";
 import Reports from "@/pages/Reports";
 import Integrations from "@/pages/Integrations";
+import ProjectAutodesk from "@/pages/ProjectAutodesk";
 import AuthCallback from "@/pages/AuthCallback";
 import AppShell from "@/components/AppShell";
 
@@ -45,6 +46,7 @@ function AppRouter() {
       <Route path="/projects/:id/proposals" element={<Protected><Proposals /></Protected>} />
       <Route path="/projects/:id/risks" element={<Protected><Risks /></Protected>} />
       <Route path="/projects/:id/reports" element={<Protected><Reports /></Protected>} />
+      <Route path="/projects/:id/autodesk" element={<Protected><ProjectAutodesk /></Protected>} />
       <Route path="*" element={<Navigate to="/" replace />} />
     </Routes>
   );

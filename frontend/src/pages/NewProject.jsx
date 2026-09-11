@@ -5,6 +5,7 @@ import { toast } from "sonner";
 import { MapPin, Search, Loader2, ArrowRight, Check } from "lucide-react";
 import { api } from "@/lib/api";
 import { PROJECT } from "@/constants/testIds";
+import { LocationPicker } from "@/components/LocationPicker";
 
 const STEPS = ["Location", "Site Data", "Assumptions", "Review"];
 
@@ -146,6 +147,15 @@ export default function NewProject() {
             <div className="mt-6 p-4 bg-slate-50 rounded-md border border-slate-200 text-xs text-slate-600">
               <div className="font-semibold text-slate-900 mb-1">Selected: {form.location.name}</div>
               Lat {form.location.lat.toFixed(4)} · Lng {form.location.lng.toFixed(4)}
+            </div>
+
+            <div className="mt-4">
+              <div className="text-xs text-slate-500 mb-2 uppercase tracking-widest">Live Satellite Preview</div>
+              <LocationPicker
+                lat={form.location.lat}
+                lng={form.location.lng}
+                onPick={({ lat, lng }) => setForm(f => ({ ...f, location: { ...f.location, lat, lng, name: f.location.name } }))}
+              />
             </div>
           </motion.div>
         )}

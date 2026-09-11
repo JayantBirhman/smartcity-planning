@@ -22,6 +22,7 @@ const NAV_ITEMS = [
   { to: "proposals", label: "Proposal Comparison", icon: GitCompareArrows, testId: NAV.sidebarProposals, projectRoute: true },
   { to: "risks", label: "Challenges & Risks", icon: ShieldAlert, testId: NAV.sidebarRisks, projectRoute: true },
   { to: "reports", label: "Reports", icon: FileBarChart2, testId: NAV.sidebarReports, projectRoute: true },
+  { to: "autodesk", label: "Autodesk Sync", icon: Plug, testId: NAV.sidebarProjectAutodesk, projectRoute: true },
   { to: "/integrations", label: "Autodesk Integration", icon: Plug, testId: NAV.sidebarIntegrations, projectRoute: false },
 ];
 

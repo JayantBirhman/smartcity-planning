@@ -277,3 +277,186 @@ class TestProjects:
         assert r.status_code == 200
         r2 = requests.get(f"{API}/projects/{pid}", headers=demo_headers, timeout=15)
         assert r2.status_code == 404
+
+
+# ---------- Boundary + Autodesk-link features ----------
+def _sample_polygon_feature_collection(lat0=18.5, lng0=73.8, d=0.02):
+    """Simple square polygon around (lat0,lng0), ~2km x 2km."""
+    ring = [
+        [lng0 - d, lat0 - d],
+        [lng0 + d, lat0 - d],
+        [lng0 + d, lat0 + d],
+        [lng0 - d, lat0 + d],
+        [lng0 - d, lat0 - d],
+    ]
+    return {"type": "FeatureCollection", "features": [
+        {"type": "Feature", "properties": {}, "geometry": {"type": "Polygon", "coordinates": [ring]}}
+    ]}
+
+
+@pytest.fixture(scope="module")
+def boundary_project(demo_headers):
+    payload = {
+        "name": "TEST_boundary_project",
+        "location": {"name": "TestPlot", "lat": 18.5, "lng": 73.8},
+        "site_area_sqkm": 10.0, "existing_population": 40000, "target_population": 90000,
+        "growth_rate": 2.5, "planning_horizon_years": 15,
+        "existing_schools": 5, "existing_hospitals": 1, "existing_parks": 3,
+        "existing_roads_km": 30, "existing_buildings": 3000,
+    }
+    r = requests.post(f"{API}/projects", headers=demo_headers, json=payload, timeout=30)
+    assert r.status_code == 200
+    pid = r.json()["id"]
+    yield pid
+    requests.delete(f"{API}/projects/{pid}", headers=demo_headers, timeout=15)
+
+
+class TestBoundary:
+    def test_put_boundary_feature_collection(self, demo_headers, boundary_project):
+        pid = boundary_project
+        fc = _sample_polygon_feature_collection()
+        r = requests.put(f"{API}/projects/{pid}/boundary",
+                         headers=demo_headers,
+                         json={"geojson": fc, "source_name": "test-plot.geojson"}, timeout=30)
+        assert r.status_code == 200, r.text
+        p = r.json()
+        assert "boundary" in p and p["boundary"]["latlngs"], "boundary.latlngs missing"
+        assert isinstance(p["boundary"]["latlngs"], list) and len(p["boundary"]["latlngs"]) >= 4
+        assert p["site_area_sqkm"] > 0
+        # zones have polygons and areas sum ~ site_area
+        total_area = 0.0
+        for z in p["zones"]:
+            assert "polygons" in z, "zone missing polygons key"
+            assert len(z["polygons"]) > 0, f"zone {z['id']} has empty polygons"
+            total_area += z["area_sqkm"]
+        assert abs(total_area - p["site_area_sqkm"]) / p["site_area_sqkm"] < 0.05, (
+            f"zone areas sum {total_area} !~ site_area {p['site_area_sqkm']}")
+        # infra_points
+        assert "infra_points" in p and isinstance(p["infra_points"], list) and len(p["infra_points"]) > 0
+        # location moved to centroid (~18.5, 73.8 for our test polygon)
+        assert abs(p["location"]["lat"] - 18.5) < 0.01
+        assert abs(p["location"]["lng"] - 73.8) < 0.01
+
+    def test_put_boundary_bare_polygon(self, demo_headers, boundary_project):
+        pid = boundary_project
+        d = 0.01
+        bare = {"type": "Polygon", "coordinates": [[
+            [73.8 - d, 18.5 - d], [73.8 + d, 18.5 - d],
+            [73.8 + d, 18.5 + d], [73.8 - d, 18.5 + d], [73.8 - d, 18.5 - d]]]}
+        r = requests.put(f"{API}/projects/{pid}/boundary",
+                         headers=demo_headers, json={"geojson": bare}, timeout=30)
+        assert r.status_code == 200, r.text
+        assert r.json()["boundary"]["latlngs"]
+
+    def test_put_boundary_multipolygon(self, demo_headers, boundary_project):
+        pid = boundary_project
+        d = 0.01
+        mp = {"type": "MultiPolygon", "coordinates": [
+            [[[73.80 - d, 18.50 - d], [73.80 + d, 18.50 - d],
+              [73.80 + d, 18.50 + d], [73.80 - d, 18.50 + d], [73.80 - d, 18.50 - d]]],
+            [[[73.90 - d, 18.60 - d], [73.90 + d, 18.60 - d],
+              [73.90 + d, 18.60 + d], [73.90 - d, 18.60 + d], [73.90 - d, 18.60 - d]]],
+        ]}
+        r = requests.put(f"{API}/projects/{pid}/boundary",
+                         headers=demo_headers, json={"geojson": mp}, timeout=30)
+        assert r.status_code == 200, r.text
+
+    def test_put_boundary_invalid_returns_400(self, demo_headers, boundary_project):
+        pid = boundary_project
+        bad = {"type": "FeatureCollection", "features": [
+            {"type": "Feature", "properties": {},
+             "geometry": {"type": "Point", "coordinates": [73.8, 18.5]}}]}
+        r = requests.put(f"{API}/projects/{pid}/boundary",
+                         headers=demo_headers, json={"geojson": bad}, timeout=15)
+        assert r.status_code == 400
+
+    def test_put_boundary_unknown_project_404(self, demo_headers):
+        r = requests.put(f"{API}/projects/no-such-id/boundary",
+                         headers=demo_headers,
+                         json={"geojson": _sample_polygon_feature_collection()}, timeout=15)
+        assert r.status_code == 404
+
+    def test_put_boundary_unauth_401(self, boundary_project):
+        r = requests.put(f"{API}/projects/{boundary_project}/boundary",
+                         json={"geojson": _sample_polygon_feature_collection()}, timeout=15)
+        assert r.status_code == 401
+
+    def test_delete_boundary_reverts(self, demo_headers, boundary_project):
+        pid = boundary_project
+        # ensure a boundary exists
+        requests.put(f"{API}/projects/{pid}/boundary",
+                     headers=demo_headers,
+                     json={"geojson": _sample_polygon_feature_collection()}, timeout=30)
+        r = requests.delete(f"{API}/projects/{pid}/boundary", headers=demo_headers, timeout=15)
+        assert r.status_code == 200, r.text
+        p = r.json()
+        assert "boundary" not in p or not p.get("boundary")
+        assert "infra_points" not in p or not p.get("infra_points")
+        assert p["site_area_sqkm"] == p["inputs"]["site_area_sqkm"]
+        # zone polygons removed
+        for z in p["zones"]:
+            assert not z.get("polygons")
+
+
+class TestAutodeskLink:
+    def test_link_without_connect_409(self, demo_headers, boundary_project):
+        # ensure not connected
+        demo_user = db.users.find_one({"email": "demo@smartscape.ai"})
+        db.aps_tokens.delete_one({"user_id": demo_user["id"]})
+        r = requests.put(f"{API}/projects/{boundary_project}/autodesk-link",
+                         headers=demo_headers,
+                         json={"hub_id": "b.hub1", "aps_project_id": "b.proj1"}, timeout=15)
+        assert r.status_code == 409
+
+    def test_contents_without_link_404(self, demo_headers, boundary_project):
+        r = requests.get(f"{API}/projects/{boundary_project}/autodesk-contents",
+                         headers=demo_headers, timeout=15)
+        assert r.status_code == 404
+
+    def test_unlink_idempotent(self, demo_headers, boundary_project):
+        r = requests.delete(f"{API}/projects/{boundary_project}/autodesk-link",
+                            headers=demo_headers, timeout=15)
+        assert r.status_code == 200
+        # second call also ok
+        r2 = requests.delete(f"{API}/projects/{boundary_project}/autodesk-link",
+                             headers=demo_headers, timeout=15)
+        assert r2.status_code == 200
+
+    def test_link_with_fake_token_then_contents_graceful(self, demo_headers, boundary_project):
+        demo_user = db.users.find_one({"email": "demo@smartscape.ai"})
+        uid = demo_user["id"]
+        # inject fake APS token
+        db.aps_tokens.update_one({"user_id": uid}, {"$set": {
+            "user_id": uid,
+            "access_token": "bogus-access-token",
+            "refresh_token": None,
+            "expires_at": (datetime.now(timezone.utc) + timedelta(hours=1)).isoformat(),
+            "scope": "data:read",
+            "updated_at": datetime.now(timezone.utc).isoformat(),
+        }}, upsert=True)
+        try:
+            r = requests.put(f"{API}/projects/{boundary_project}/autodesk-link",
+                             headers=demo_headers,
+                             json={"hub_id": "b.hub-fake", "hub_name": "FakeHub",
+                                   "aps_project_id": "b.proj-fake", "aps_project_name": "FakeProj",
+                                   "root_folder": "urn:adsk.wipprod:fs.folder:co.fake"}, timeout=15)
+            assert r.status_code == 200, r.text
+            link = r.json()
+            assert link["hub_id"] == "b.hub-fake"
+            assert link["aps_project_id"] == "b.proj-fake"
+            assert link["last_synced_at"] is None
+            assert "linked_at" in link
+            # verify stored on project
+            proj = db.projects.find_one({"id": boundary_project})
+            assert proj["autodesk"]["hub_id"] == "b.hub-fake"
+
+            # contents fails gracefully (409 or 4xx from Autodesk, NOT 500)
+            r2 = requests.get(f"{API}/projects/{boundary_project}/autodesk-contents",
+                              headers=demo_headers, timeout=30)
+            assert r2.status_code != 500, f"got 500: {r2.text}"
+            assert 400 <= r2.status_code < 500
+        finally:
+            db.aps_tokens.delete_one({"user_id": uid})
+            requests.delete(f"{API}/projects/{boundary_project}/autodesk-link",
+                            headers=demo_headers, timeout=15)
+
