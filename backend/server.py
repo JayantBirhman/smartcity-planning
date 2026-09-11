@@ -1,7 +1,9 @@
-from fastapi import FastAPI, APIRouter, HTTPException, Depends, status, Request, Response
+from fastapi import FastAPI, APIRouter, HTTPException, Depends, status, Request, Response, UploadFile, File, Form
 from fastapi.responses import RedirectResponse
 from dotenv import load_dotenv
 import httpx
+import json
+import re
 import secrets
 import urllib.parse
 from starlette.middleware.cors import CORSMiddleware
@@ -36,7 +38,7 @@ APS_CLIENT_ID = os.environ.get('APS_CLIENT_ID')
 APS_CLIENT_SECRET = os.environ.get('APS_CLIENT_SECRET')
 APS_CALLBACK_URL = os.environ.get('APS_CALLBACK_URL')
 APS_BASE = "https://developer.api.autodesk.com"
-APS_SCOPES = "data:read data:write account:read user:read openid"
+APS_SCOPES = "data:read data:write data:create account:read user:read openid"
 
 app = FastAPI(title="SmartScape API")
 api_router = APIRouter(prefix="/api")
@@ -171,7 +173,7 @@ def compute_infrastructure(pop: int, existing: Dict[str, int]) -> Dict[str, Any]
         "clinics": {"required": req_clinics, "existing": 0, "deficit": req_clinics},
     }
 
-def compute_zoning(site_area_sqkm: float, pop: int) -> List[Dict[str, Any]]:
+def compute_zoning(site_area_sqkm: float, pop: int, land_use: Optional[Dict[str, float]] = None) -> List[Dict[str, Any]]:
     zones = []
     palette = {
         "residential": "#FBBF24",
@@ -192,7 +194,7 @@ def compute_zoning(site_area_sqkm: float, pop: int) -> List[Dict[str, Any]]:
         "public_utility": "Water, power, waste treatment and public services",
     }
     zid = 1
-    for key, ratio in PLANNING_RULES["land_use"].items():
+    for key, ratio in (land_use or PLANNING_RULES["land_use"]).items():
         area = round(site_area_sqkm * ratio, 3)
         cap = int(pop * ratio) if key == "residential" else 0
         zones.append({
@@ -209,8 +211,8 @@ def compute_zoning(site_area_sqkm: float, pop: int) -> List[Dict[str, Any]]:
         zid += 1
     return zones
 
-def compute_sustainability(pop: int, site: float) -> Dict[str, Any]:
-    green_ratio = PLANNING_RULES["land_use"]["parks_green"]
+def compute_sustainability(pop: int, site: float, green_ratio: Optional[float] = None) -> Dict[str, Any]:
+    green_ratio = PLANNING_RULES["land_use"]["parks_green"] if green_ratio is None else green_ratio
     return {
         "embodied_carbon": {"value": round(pop * 0.0042, 1), "unit": "kt CO2e", "score": 72, "trend": "decreasing"},
         "solar_potential": {"value": round(site * 145, 1), "unit": "MWh/yr", "score": 84, "trend": "high"},
@@ -228,7 +230,7 @@ def compute_score(infra: Dict, sust: Dict) -> Dict[str, Any]:
         {"category": "Infrastructure Fulfillment", "weight": 25, "score": max(40, infra_fulfillment), "reason": "Based on schools/hospitals/parks required vs existing"},
         {"category": "Land Use Efficiency", "weight": 20, "score": 82, "reason": "Balanced residential + commercial + institutional distribution"},
         {"category": "Accessibility", "weight": 15, "score": 76, "reason": "Road coverage and facility distribution"},
-        {"category": "Green / Open Space", "weight": 15, "score": sust["green_space_pct"] * 5, "reason": "% of site allocated to parks & greens"},
+        {"category": "Green / Open Space", "weight": 15, "score": min(100, sust["green_space_pct"] * 5), "reason": "% of site allocated to parks & greens"},
         {"category": "Sustainability", "weight": 15, "score": sust["solar_potential"]["score"], "reason": "Composite of solar, carbon, daylight, wind, noise"},
         {"category": "Population Capacity", "weight": 10, "score": 88, "reason": "Density feasibility vs target population"},
     ]
@@ -807,6 +809,223 @@ async def linked_autodesk_contents(pid: str, folder_id: Optional[str] = None, us
     await db.projects.update_one({"id": pid}, {"$set": {"autodesk.last_synced_at": synced}})
     return {"folder_id": folder, "items": items, "last_synced_at": synced,
             "root_folder": link.get("root_folder")}
+
+class ZoningIn(BaseModel):
+    allocations: Dict[str, float]
+    persist: bool = False
+
+@api_router.post("/projects/{pid}/zoning")
+async def recompute_zoning(pid: str, body: ZoningIn, user=Depends(get_current_user)):
+    doc = await db.projects.find_one({"id": pid, "user_id": user["id"]}, {"_id": 0})
+    if not doc:
+        raise HTTPException(status_code=404, detail="Project not found")
+    keys = set(PLANNING_RULES["land_use"].keys())
+    if set(body.allocations.keys()) != keys:
+        raise HTTPException(status_code=400, detail=f"Allocations must cover exactly: {sorted(keys)}")
+    if any(v < 0 for v in body.allocations.values()):
+        raise HTTPException(status_code=400, detail="Allocations cannot be negative")
+    total = sum(body.allocations.values())
+    if total <= 0 or abs(total - 100) > 1.5:
+        raise HTTPException(status_code=400, detail=f"Allocations must total 100% (got {round(total, 2)}%)")
+    land_use = {k: v / total for k, v in body.allocations.items()}
+
+    pop = doc["population"]["forecast_population"]
+    area = doc["site_area_sqkm"]
+    zones = compute_zoning(area, pop, land_use)
+    infra_points = doc.get("infra_points", [])
+    if doc.get("boundary", {}).get("ring"):
+        geo = build_geometry_from_boundary(doc["boundary"]["ring"], zones, doc["infrastructure"])
+        zones, infra_points = geo["zones"], geo["infra_points"]
+    sust = compute_sustainability(pop, area, land_use["parks_green"])
+    score = compute_score(doc["infrastructure"], sust)
+    result = {"zones": zones, "sustainability": sust, "score": score,
+              "infra_points": infra_points, "land_use_custom": body.allocations,
+              "site_area_sqkm": area}
+    if body.persist:
+        await db.projects.update_one({"id": pid}, {"$set": {**result, "updated_at": now_iso()}})
+    return result
+
+@api_router.post("/projects/{pid}/zoning/reset")
+async def reset_zoning(pid: str, user=Depends(get_current_user)):
+    doc = await db.projects.find_one({"id": pid, "user_id": user["id"]}, {"_id": 0})
+    if not doc:
+        raise HTTPException(status_code=404, detail="Project not found")
+    pop = doc["population"]["forecast_population"]
+    area = doc["site_area_sqkm"]
+    zones = compute_zoning(area, pop)
+    infra_points = doc.get("infra_points", [])
+    if doc.get("boundary", {}).get("ring"):
+        geo = build_geometry_from_boundary(doc["boundary"]["ring"], zones, doc["infrastructure"])
+        zones, infra_points = geo["zones"], geo["infra_points"]
+    sust = compute_sustainability(pop, area)
+    score = compute_score(doc["infrastructure"], sust)
+    await db.projects.update_one({"id": pid}, {
+        "$set": {"zones": zones, "sustainability": sust, "score": score,
+                 "infra_points": infra_points, "updated_at": now_iso()},
+        "$unset": {"land_use_custom": ""},
+    })
+    return await db.projects.find_one({"id": pid}, {"_id": 0})
+
+# ---------- Push files into the linked Autodesk project ----------
+JSONAPI = "application/vnd.api+json"
+
+async def aps_request(user_id: str, method: str, path: str, *, json_body=None,
+                      params=None, content_type: Optional[str] = None) -> httpx.Response:
+    token = await get_aps_access_token(user_id)
+    headers = {"Authorization": f"Bearer {token}", "Accept": JSONAPI}
+    if content_type:
+        headers["Content-Type"] = content_type
+    async with httpx.AsyncClient(timeout=120) as http:
+        return await http.request(method, f"{APS_BASE}{path}", headers=headers, json=json_body, params=params)
+
+def _split_storage_id(storage_id: str) -> tuple:
+    prefix = "urn:adsk.objects:os.object:"
+    if not storage_id.startswith(prefix):
+        raise HTTPException(status_code=502, detail="Autodesk returned an invalid storage id")
+    bucket, _, object_key = storage_id[len(prefix):].partition("/")
+    if not bucket or not object_key:
+        raise HTTPException(status_code=502, detail="Cannot parse Autodesk storage id")
+    return bucket, object_key
+
+async def aps_upload_file(user_id: str, aps_project_id: str, folder_id: str,
+                          filename: str, data: bytes) -> Dict[str, Any]:
+    pid_enc = urllib.parse.quote(aps_project_id, safe="")
+    storage_body = {
+        "jsonapi": {"version": "1.0"},
+        "data": {"type": "objects", "attributes": {"name": filename},
+                 "relationships": {"target": {"data": {"type": "folders", "id": folder_id}}}},
+    }
+    r = await aps_request(user_id, "POST", f"/data/v1/projects/{pid_enc}/storage",
+                          json_body=storage_body, content_type=JSONAPI)
+    if r.status_code != 201:
+        raise HTTPException(status_code=r.status_code if r.status_code < 500 else 502,
+                            detail=f"Autodesk storage creation failed: {r.text[:250]}")
+    storage_id = r.json()["data"]["id"]
+
+    bucket, object_key = _split_storage_id(storage_id)
+    signed_path = f"/oss/v2/buckets/{bucket}/objects/{urllib.parse.quote(object_key, safe='')}/signeds3upload"
+    r = await aps_request(user_id, "GET", signed_path, params={"parts": 1})
+    if r.status_code != 200:
+        raise HTTPException(status_code=502, detail=f"Autodesk signed upload failed: {r.text[:250]}")
+    signed = r.json()
+    async with httpx.AsyncClient(timeout=180) as http:
+        s3 = await http.put(signed["urls"][0], content=data)  # signed URL: no Authorization header
+    if s3.status_code not in (200, 201):
+        raise HTTPException(status_code=502, detail=f"Upload to Autodesk storage failed ({s3.status_code})")
+    r = await aps_request(user_id, "POST", signed_path,
+                          json_body={"uploadKey": signed["uploadKey"]}, content_type="application/json")
+    if r.status_code not in (200, 201):
+        raise HTTPException(status_code=502, detail=f"Finalizing upload failed: {r.text[:250]}")
+
+    item_body = {
+        "jsonapi": {"version": "1.0"},
+        "data": {
+            "type": "items",
+            "attributes": {"displayName": filename,
+                           "extension": {"type": "items:autodesk.core:File", "version": "1.0"}},
+            "relationships": {"tip": {"data": {"type": "versions", "id": "1"}},
+                              "parent": {"data": {"type": "folders", "id": folder_id}}},
+        },
+        "included": [{
+            "type": "versions", "id": "1",
+            "attributes": {"name": filename,
+                           "extension": {"type": "versions:autodesk.core:File", "version": "1.0"}},
+            "relationships": {"storage": {"data": {"type": "objects", "id": storage_id}}},
+        }],
+    }
+    r = await aps_request(user_id, "POST", f"/data/v1/projects/{pid_enc}/items",
+                          json_body=item_body, content_type=JSONAPI)
+    if r.status_code == 201:
+        return {"name": filename, "mode": "created", "item_id": r.json()["data"]["id"]}
+    if r.status_code != 409:
+        raise HTTPException(status_code=r.status_code if r.status_code < 500 else 502,
+                            detail=f"Creating Autodesk item failed: {r.text[:250]}")
+
+    contents = await aps_request(user_id, "GET",
+                                 f"/data/v1/projects/{pid_enc}/folders/{urllib.parse.quote(folder_id, safe='')}/contents",
+                                 params={"filter[type]": "items"})
+    item_id = next((i["id"] for i in contents.json().get("data", [])
+                    if i.get("attributes", {}).get("displayName") == filename), None)
+    if not item_id:
+        raise HTTPException(status_code=409, detail="Autodesk reported a name conflict but the item was not found")
+    version_body = {
+        "jsonapi": {"version": "1.0"},
+        "data": {"type": "versions",
+                 "attributes": {"name": filename, "displayName": filename,
+                                "extension": {"type": "versions:autodesk.core:File", "version": "1.0"}},
+                 "relationships": {"item": {"data": {"type": "items", "id": item_id}},
+                                   "storage": {"data": {"type": "objects", "id": storage_id}}}},
+    }
+    r = await aps_request(user_id, "POST", f"/data/v1/projects/{pid_enc}/versions",
+                          json_body=version_body, content_type=JSONAPI)
+    if r.status_code != 201:
+        raise HTTPException(status_code=502, detail=f"Creating new version failed: {r.text[:250]}")
+    return {"name": filename, "mode": "new_version", "item_id": item_id}
+
+def boundary_geojson(doc: Dict[str, Any]) -> Dict[str, Any]:
+    ring = doc["boundary"]["ring"]
+    return {"type": "FeatureCollection", "features": [{
+        "type": "Feature",
+        "properties": {"name": doc["name"], "site_area_sqkm": doc["site_area_sqkm"],
+                       "location": doc["location"]["name"], "source": "SmartScape"},
+        "geometry": {"type": "Polygon", "coordinates": [ring]},
+    }]}
+
+def zoning_geojson(doc: Dict[str, Any]) -> Dict[str, Any]:
+    features = []
+    for z in doc.get("zones", []):
+        for ring in z.get("polygons", []) or []:
+            features.append({"type": "Feature",
+                             "properties": {"zone_id": z["id"], "type": z["type"], "name": z["name"],
+                                            "percentage": z["percentage"], "area_sqkm": z["area_sqkm"],
+                                            "color": z["color"]},
+                             "geometry": {"type": "Polygon", "coordinates": [[[c[1], c[0]] for c in ring]]}})
+    return {"type": "FeatureCollection", "features": features}
+
+@api_router.post("/projects/{pid}/autodesk-push")
+async def push_to_autodesk(pid: str, brief: Optional[UploadFile] = File(None),
+                           include_boundary: bool = Form(True),
+                           include_zoning: bool = Form(True),
+                           user=Depends(get_current_user)):
+    doc = await db.projects.find_one({"id": pid, "user_id": user["id"]}, {"_id": 0})
+    if not doc or not doc.get("autodesk"):
+        raise HTTPException(status_code=404, detail="No Autodesk project linked to this plan")
+    link = doc["autodesk"]
+    folder = link.get("root_folder")
+    if not folder:
+        raise HTTPException(status_code=400, detail="Linked Autodesk project has no root folder")
+
+    safe_name = re.sub(r"[^A-Za-z0-9_\-]+", "_", doc["name"]).strip("_") or "SmartScape_Plan"
+    uploads: List[tuple] = []
+    if brief is not None:
+        content = await brief.read()
+        if content:
+            uploads.append((f"{safe_name}_Design_Brief.pdf", content))
+    if include_boundary and doc.get("boundary", {}).get("ring"):
+        uploads.append((f"{safe_name}_Site_Boundary.geojson",
+                        json.dumps(boundary_geojson(doc), indent=2).encode()))
+    if include_zoning:
+        zoning = zoning_geojson(doc)
+        if zoning["features"]:
+            uploads.append((f"{safe_name}_Zoning.geojson", json.dumps(zoning, indent=2).encode()))
+    if not uploads:
+        raise HTTPException(status_code=400, detail="Nothing to push — generate a brief or upload a site boundary first")
+
+    results = []
+    for filename, data in uploads:
+        try:
+            res = await aps_upload_file(user["id"], link["aps_project_id"], folder, filename, data)
+            res["size_kb"] = round(len(data) / 1024, 1)
+            results.append({**res, "ok": True})
+        except HTTPException as e:
+            logger.warning(f"APS push failed for {filename}: {e.detail}")
+            results.append({"name": filename, "ok": False, "error": str(e.detail)})
+    pushed_at = now_iso()
+    await db.projects.update_one({"id": pid}, {"$set": {"autodesk.last_pushed_at": pushed_at,
+                                                        "autodesk.last_push_results": results}})
+    if not any(r["ok"] for r in results):
+        raise HTTPException(status_code=502, detail=results[0].get("error", "Autodesk push failed"))
+    return {"results": results, "pushed_at": pushed_at, "folder_id": folder}
 
 # ---------- Chatbot ----------
 def build_system_prompt(project: Optional[Dict], zone_ctx: Optional[Dict]) -> str:

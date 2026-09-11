@@ -2,7 +2,7 @@ import { useEffect, useState } from "react";
 import { useSearchParams } from "react-router-dom";
 import { motion } from "framer-motion";
 import { toast } from "sonner";
-import { Loader2, Link2, Unlink, RefreshCw, Building2, FolderOpen, CheckCircle2, AlertTriangle, ChevronRight } from "lucide-react";
+import { Loader2, Link2, Unlink, RefreshCw, Building2, FolderOpen, CheckCircle2, AlertTriangle, ChevronRight, Copy } from "lucide-react";
 import { api } from "@/lib/api";
 
 export default function Integrations() {
@@ -141,6 +141,32 @@ export default function Integrations() {
         {!status?.configured && (
           <div className="mt-4 text-sm text-amber-700 bg-amber-50 border border-amber-200 rounded-md p-3 flex gap-2">
             <AlertTriangle size={16} className="mt-0.5" /> Autodesk client credentials are missing on the server.
+          </div>
+        )}
+        {status?.connected && !String(status.scope || "").includes("data:create") && (
+          <div data-testid="scope-warning" className="mt-4 text-sm text-amber-800 bg-amber-50 border border-amber-200 rounded-md p-3 flex gap-2">
+            <AlertTriangle size={16} className="mt-0.5" />
+            Your Autodesk session was granted before file-upload support was added. Disconnect and connect again to
+            allow SmartScape to push files (needs the <code className="text-xs">data:create</code> scope).
+          </div>
+        )}
+        {!status?.connected && (
+          <div className="mt-5 rounded-md border border-slate-200 bg-slate-50 p-4">
+            <div className="text-[11px] uppercase tracking-widest text-slate-500 font-semibold mb-2">
+              Step 1 — register this callback URL in your APS app
+            </div>
+            <div className="flex items-center gap-2">
+              <code data-testid="callback-url" className="text-[11px] break-all text-slate-700 flex-1">{status?.callback_url}</code>
+              <button data-testid="copy-callback-btn"
+                onClick={() => { navigator.clipboard?.writeText(status?.callback_url || ""); toast.success("Callback URL copied"); }}
+                className="h-8 px-2 rounded border border-slate-300 text-xs hover:bg-white flex items-center gap-1">
+                <Copy size={12} /> Copy
+              </button>
+            </div>
+            <div className="text-xs text-slate-500 mt-2">
+              Go to <span className="font-medium text-slate-700">aps.autodesk.com → My Apps → your app → Callback URL</span> and paste it
+              exactly. If it is missing, Autodesk shows a “request error” page right after you sign in.
+            </div>
           </div>
         )}
       </motion.div>

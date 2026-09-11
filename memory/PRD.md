@@ -14,6 +14,20 @@ React 19 + Tailwind + Shadcn + Leaflet + framer-motion + jsPDF · FastAPI + Moto
 Claude Sonnet 5 via Emergent LLM key · Emergent-managed Google Auth · Autodesk Platform Services (APS) OAuth.
 
 ## Implemented
+### 2026-06 (session 4) — Push to Autodesk + live zone editing
+- **Push to Autodesk**: `POST /api/projects/{id}/autodesk-push` uploads the Design Brief PDF (generated client-side
+  with jsPDF, shared builder in `frontend/src/lib/brief.js`), the site-boundary GeoJSON and a zoning GeoJSON into the
+  linked ACC project folder using the APS direct-to-S3 flow (create storage → signed upload → finalize → create item,
+  or create a new version on a 409 name conflict). UI lives on the plan's Autodesk Sync page with a result list and
+  `last_pushed_at`. APS scope now includes `data:create` (existing connections must reconnect — a scope warning is shown).
+- **Live zone editing**: draggable dividers on a land-use bar (`LandUseBar`) shift share between neighbouring zones;
+  `POST /api/projects/{id}/zoning` previews recut polygons + sustainability + score instantly (persist:false) and saves
+  on Apply (persist:true); `POST /api/projects/{id}/zoning/reset` restores the recommended URDPFI mix.
+- **Autodesk error UX fix** (user-reported): prominent copyable callback-URL pre-flight card on `/integrations` and the
+  Autodesk Sync page — the reported error was Autodesk's own "request error" caused by the callback URL not being
+  registered in the user's APS app. All Autodesk endpoints verified to degrade gracefully (409/404/400/502, never 500).
+- Testing: 49/49 backend tests pass, all frontend flows pass with 0 console errors (`/app/test_reports/iteration_3.json`).
+
 ### 2026-06 (session 3) — Autodesk project linking, real site boundaries, realistic maps
 - **Autodesk project link (pull-only sync)**: new project page `/projects/:id/autodesk` (sidebar "Autodesk Sync").
   Pick Hub → Project → Link. Backend `PUT/DELETE /api/projects/{id}/autodesk-link` (gated on a connected
@@ -54,10 +68,10 @@ Claude Sonnet 5 via Emergent LLM key · Emergent-managed Google Auth · Autodesk
 
 ## Backlog
 - **P1** Draw the site boundary by hand on the map (in addition to GeoJSON upload).
-- **P1** Push a SmartScape design brief / boundary GeoJSON into the linked Autodesk project folder (data:write).
+- **P1** Verify a real end-to-end Autodesk push once the user registers the callback URL and reconnects.
 - **P2** Recharts ResponsiveContainer min-height warnings on Dashboard/Reports.
 - **P2** Multi-user collaboration / share a project read-only link.
-- **P2** Split `server.py` (~950 lines) into auth / autodesk / geometry / planning modules.
+- **P2** Split `server.py` (~1030 lines) into auth / autodesk / geometry / zoning / planning modules.
 
 ## Known limits
 - Autodesk Forma has no public external design API — Forma proposals are only visible through ACC project

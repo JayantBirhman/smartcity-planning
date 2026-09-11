@@ -460,3 +460,236 @@ class TestAutodeskLink:
             requests.delete(f"{API}/projects/{boundary_project}/autodesk-link",
                             headers=demo_headers, timeout=15)
 
+
+# ---------- Zoning edit + reset ----------
+LAND_USE_KEYS = ["residential", "commercial", "institutional", "industrial",
+                 "roads_transport", "parks_green", "public_utility"]
+RECOMMENDED = {"residential": 38, "commercial": 10, "institutional": 10, "industrial": 5,
+               "roads_transport": 15, "parks_green": 15, "public_utility": 7}
+
+
+@pytest.fixture(scope="module")
+def zoning_project(demo_headers):
+    payload = {
+        "name": "TEST_zoning_project",
+        "location": {"name": "TestZonePlot", "lat": 18.5, "lng": 73.8},
+        "site_area_sqkm": 10.0, "existing_population": 40000, "target_population": 90000,
+        "growth_rate": 2.5, "planning_horizon_years": 15,
+        "existing_schools": 5, "existing_hospitals": 1, "existing_parks": 3,
+        "existing_roads_km": 30, "existing_buildings": 3000,
+    }
+    r = requests.post(f"{API}/projects", headers=demo_headers, json=payload, timeout=30)
+    assert r.status_code == 200
+    pid = r.json()["id"]
+    yield pid
+    requests.delete(f"{API}/projects/{pid}", headers=demo_headers, timeout=15)
+
+
+class TestZoning:
+    def test_zoning_preview_no_persist(self, demo_headers, zoning_project):
+        # Change allocations, more parks_green
+        alloc = {"residential": 30, "commercial": 10, "institutional": 10, "industrial": 5,
+                 "roads_transport": 15, "parks_green": 23, "public_utility": 7}
+        original = requests.get(f"{API}/projects/{zoning_project}",
+                                headers=demo_headers, timeout=15).json()
+        original_score = original["score"]["overall"]
+        r = requests.post(f"{API}/projects/{zoning_project}/zoning",
+                         headers=demo_headers,
+                         json={"allocations": alloc, "persist": False}, timeout=30)
+        assert r.status_code == 200, r.text
+        j = r.json()
+        assert "zones" in j and len(j["zones"]) == 7
+        # green_space_pct should equal parks_green (23%)
+        assert abs(j["sustainability"]["green_space_pct"] - 23) < 0.1
+        # score changed
+        assert j["score"]["overall"] != original_score
+        # zone percentages match
+        pct_map = {z["type"]: z["percentage"] for z in j["zones"]}
+        for k, v in alloc.items():
+            assert abs(pct_map[k] - v) < 0.5, f"{k}: got {pct_map[k]} vs {v}"
+        # NOT persisted
+        after = requests.get(f"{API}/projects/{zoning_project}",
+                             headers=demo_headers, timeout=15).json()
+        assert after["score"]["overall"] == original_score
+        assert "land_use_custom" not in after or not after.get("land_use_custom")
+
+    def test_zoning_persist(self, demo_headers, zoning_project):
+        alloc = {"residential": 40, "commercial": 12, "institutional": 8, "industrial": 5,
+                 "roads_transport": 15, "parks_green": 13, "public_utility": 7}
+        r = requests.post(f"{API}/projects/{zoning_project}/zoning",
+                         headers=demo_headers,
+                         json={"allocations": alloc, "persist": True}, timeout=30)
+        assert r.status_code == 200
+        # verify persisted
+        p = requests.get(f"{API}/projects/{zoning_project}",
+                        headers=demo_headers, timeout=15).json()
+        pct_map = {z["type"]: z["percentage"] for z in p["zones"]}
+        assert abs(pct_map["residential"] - 40) < 0.5
+        assert p.get("land_use_custom") == alloc
+
+    def test_zoning_missing_keys_400(self, demo_headers, zoning_project):
+        alloc = {"residential": 50, "commercial": 50}  # missing keys
+        r = requests.post(f"{API}/projects/{zoning_project}/zoning",
+                         headers=demo_headers,
+                         json={"allocations": alloc}, timeout=15)
+        assert r.status_code == 400
+
+    def test_zoning_extra_keys_400(self, demo_headers, zoning_project):
+        alloc = {**RECOMMENDED, "farmland": 5}
+        r = requests.post(f"{API}/projects/{zoning_project}/zoning",
+                         headers=demo_headers,
+                         json={"allocations": alloc}, timeout=15)
+        assert r.status_code == 400
+
+    def test_zoning_negative_400(self, demo_headers, zoning_project):
+        alloc = {**RECOMMENDED, "residential": -5, "commercial": 53}
+        r = requests.post(f"{API}/projects/{zoning_project}/zoning",
+                         headers=demo_headers,
+                         json={"allocations": alloc}, timeout=15)
+        assert r.status_code == 400
+
+    def test_zoning_sum_off_400(self, demo_headers, zoning_project):
+        alloc = {"residential": 20, "commercial": 10, "institutional": 10, "industrial": 5,
+                 "roads_transport": 5, "parks_green": 5, "public_utility": 5}  # sum=60
+        r = requests.post(f"{API}/projects/{zoning_project}/zoning",
+                         headers=demo_headers,
+                         json={"allocations": alloc}, timeout=15)
+        assert r.status_code == 400
+        assert "100" in r.json().get("detail", "")
+
+    def test_zoning_unknown_project_404(self, demo_headers):
+        r = requests.post(f"{API}/projects/nope/zoning",
+                         headers=demo_headers,
+                         json={"allocations": RECOMMENDED}, timeout=15)
+        assert r.status_code == 404
+
+    def test_zoning_unauth_401(self, zoning_project):
+        r = requests.post(f"{API}/projects/{zoning_project}/zoning",
+                         json={"allocations": RECOMMENDED}, timeout=15)
+        assert r.status_code == 401
+
+    def test_zoning_with_boundary_clips(self, demo_headers, zoning_project):
+        # Apply boundary
+        fc = _sample_polygon_feature_collection()
+        requests.put(f"{API}/projects/{zoning_project}/boundary",
+                    headers=demo_headers, json={"geojson": fc}, timeout=30)
+        alloc = {"residential": 30, "commercial": 15, "institutional": 10, "industrial": 5,
+                 "roads_transport": 15, "parks_green": 18, "public_utility": 7}
+        r = requests.post(f"{API}/projects/{zoning_project}/zoning",
+                         headers=demo_headers,
+                         json={"allocations": alloc, "persist": False}, timeout=30)
+        assert r.status_code == 200
+        j = r.json()
+        # zones must have polygons (clipped to boundary)
+        for z in j["zones"]:
+            assert "polygons" in z and len(z["polygons"]) > 0
+        # areas roughly sum to site_area
+        total = sum(z["area_sqkm"] for z in j["zones"])
+        assert abs(total - j["site_area_sqkm"]) / j["site_area_sqkm"] < 0.05
+
+    def test_zoning_reset(self, demo_headers, zoning_project):
+        # First set a custom alloc
+        alloc = {"residential": 45, "commercial": 10, "institutional": 10, "industrial": 5,
+                 "roads_transport": 15, "parks_green": 8, "public_utility": 7}
+        requests.post(f"{API}/projects/{zoning_project}/zoning",
+                     headers=demo_headers,
+                     json={"allocations": alloc, "persist": True}, timeout=30)
+        r = requests.post(f"{API}/projects/{zoning_project}/zoning/reset",
+                        headers=demo_headers, timeout=30)
+        assert r.status_code == 200
+        p = r.json()
+        pct_map = {z["type"]: z["percentage"] for z in p["zones"]}
+        for k, v in RECOMMENDED.items():
+            assert abs(pct_map[k] - v) < 0.5, f"{k}: got {pct_map[k]} vs {v}"
+        assert not p.get("land_use_custom")
+
+
+# ---------- Push to Autodesk ----------
+class TestAutodeskPush:
+    def test_push_no_link_404(self, demo_headers, zoning_project):
+        # ensure no autodesk link
+        db.projects.update_one({"id": zoning_project}, {"$unset": {"autodesk": ""}})
+        files = {"brief": ("brief.pdf", b"%PDF-1.4 fake", "application/pdf")}
+        data = {"include_boundary": "true", "include_zoning": "true"}
+        r = requests.post(f"{API}/projects/{zoning_project}/autodesk-push",
+                        headers=demo_headers, files=files, data=data, timeout=30)
+        assert r.status_code == 404
+
+    def test_push_with_fake_token_graceful(self, demo_headers, zoning_project):
+        demo_user = db.users.find_one({"email": "demo@smartscape.ai"})
+        uid = demo_user["id"]
+        # Inject fake APS token + link
+        db.aps_tokens.update_one({"user_id": uid}, {"$set": {
+            "user_id": uid, "access_token": "bogus", "refresh_token": None,
+            "expires_at": (datetime.now(timezone.utc) + timedelta(hours=1)).isoformat(),
+            "scope": "data:read data:write data:create", "updated_at": datetime.now(timezone.utc).isoformat(),
+        }}, upsert=True)
+        # link the project
+        requests.put(f"{API}/projects/{zoning_project}/autodesk-link",
+                    headers=demo_headers,
+                    json={"hub_id": "b.hub-fake", "hub_name": "FakeHub",
+                          "aps_project_id": "b.proj-fake", "aps_project_name": "FakeProj",
+                          "root_folder": "urn:adsk.wipprod:fs.folder:co.fake"}, timeout=15)
+        try:
+            files = {"brief": ("brief.pdf", b"%PDF-1.4 fake pdf content", "application/pdf")}
+            data = {"include_boundary": "false", "include_zoning": "false"}
+            r = requests.post(f"{API}/projects/{zoning_project}/autodesk-push",
+                            headers=demo_headers, files=files, data=data, timeout=60)
+            assert r.status_code != 500, f"got 500: {r.text}"
+            assert 400 <= r.status_code < 600
+            # project doc should still be intact
+            proj = db.projects.find_one({"id": zoning_project})
+            assert proj is not None and proj["name"] == "TEST_zoning_project"
+        finally:
+            db.aps_tokens.delete_one({"user_id": uid})
+            requests.delete(f"{API}/projects/{zoning_project}/autodesk-link",
+                           headers=demo_headers, timeout=15)
+
+    def test_push_nothing_to_upload_400(self, demo_headers, zoning_project):
+        demo_user = db.users.find_one({"email": "demo@smartscape.ai"})
+        uid = demo_user["id"]
+        db.aps_tokens.update_one({"user_id": uid}, {"$set": {
+            "user_id": uid, "access_token": "bogus", "refresh_token": None,
+            "expires_at": (datetime.now(timezone.utc) + timedelta(hours=1)).isoformat(),
+            "scope": "data:create", "updated_at": datetime.now(timezone.utc).isoformat(),
+        }}, upsert=True)
+        # remove boundary first to make zoning polygons empty
+        requests.delete(f"{API}/projects/{zoning_project}/boundary",
+                       headers=demo_headers, timeout=15)
+        requests.put(f"{API}/projects/{zoning_project}/autodesk-link",
+                    headers=demo_headers,
+                    json={"hub_id": "b.hub-fake", "aps_project_id": "b.proj-fake",
+                          "root_folder": "urn:adsk.wipprod:fs.folder:co.fake"}, timeout=15)
+        try:
+            # no brief file, no boundary => nothing to push
+            data = {"include_boundary": "true", "include_zoning": "true"}
+            r = requests.post(f"{API}/projects/{zoning_project}/autodesk-push",
+                            headers=demo_headers, data=data, timeout=30)
+            assert r.status_code == 400
+            assert "Nothing to push" in r.json().get("detail", "") or "nothing" in r.json().get("detail", "").lower()
+        finally:
+            db.aps_tokens.delete_one({"user_id": uid})
+            requests.delete(f"{API}/projects/{zoning_project}/autodesk-link",
+                           headers=demo_headers, timeout=15)
+
+
+# ---------- Scope warning: old token missing data:create ----------
+class TestScopeWarning:
+    def test_status_reports_older_scope(self, demo_headers):
+        demo_user = db.users.find_one({"email": "demo@smartscape.ai"})
+        uid = demo_user["id"]
+        db.aps_tokens.update_one({"user_id": uid}, {"$set": {
+            "user_id": uid, "access_token": "bogus", "refresh_token": None,
+            "expires_at": (datetime.now(timezone.utc) + timedelta(hours=1)).isoformat(),
+            "scope": "data:read data:write account:read user:read openid",  # NO data:create
+            "updated_at": datetime.now(timezone.utc).isoformat(),
+        }}, upsert=True)
+        try:
+            r = requests.get(f"{API}/autodesk/status", headers=demo_headers, timeout=15)
+            assert r.status_code == 200
+            j = r.json()
+            assert j["connected"] is True
+            assert "data:create" not in (j.get("scope") or "")
+        finally:
+            db.aps_tokens.delete_one({"user_id": uid})
+

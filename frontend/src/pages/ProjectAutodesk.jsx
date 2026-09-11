@@ -2,8 +2,9 @@ import { useEffect, useState } from "react";
 import { useParams, Link } from "react-router-dom";
 import { motion } from "framer-motion";
 import { toast } from "sonner";
-import { Loader2, Building2, FolderOpen, Link2, Unlink, RefreshCw, ArrowLeft, CheckCircle2, FileText } from "lucide-react";
+import { Loader2, Building2, FolderOpen, Link2, Unlink, RefreshCw, ArrowLeft, CheckCircle2, FileText, UploadCloud, Copy, AlertTriangle } from "lucide-react";
 import { api } from "@/lib/api";
+import { buildBriefPdf } from "@/lib/brief";
 
 export default function ProjectAutodesk() {
   const { id } = useParams();
@@ -15,6 +16,8 @@ export default function ProjectAutodesk() {
   const [contents, setContents] = useState([]);
   const [lastSynced, setLastSynced] = useState(null);
   const [busy, setBusy] = useState(false);
+  const [pushing, setPushing] = useState(false);
+  const [pushResults, setPushResults] = useState(null);
 
   const load = async () => {
     const [p, s] = await Promise.all([api.get(`/projects/${id}`), api.get("/autodesk/status")]);
@@ -84,6 +87,23 @@ export default function ProjectAutodesk() {
     finally { setBusy(false); }
   };
 
+  const pushToAutodesk = async () => {
+    setPushing(true); setPushResults(null);
+    try {
+      const blob = buildBriefPdf(project).output("blob");
+      const fd = new FormData();
+      fd.append("brief", new File([blob], "design_brief.pdf", { type: "application/pdf" }));
+      fd.append("include_boundary", "true");
+      fd.append("include_zoning", "true");
+      const { data } = await api.post(`/projects/${id}/autodesk-push`, fd);
+      setPushResults(data.results);
+      toast.success(`Pushed ${data.results.filter((r) => r.ok).length} file(s) to Autodesk`);
+      sync();
+    } catch (e) {
+      toast.error(e?.response?.data?.detail || "Push to Autodesk failed");
+    } finally { setPushing(false); }
+  };
+
   if (!project || !status) {
     return <div className="p-8 text-slate-500 flex items-center gap-2"><Loader2 className="animate-spin" size={16} /> Loading…</div>;
   }
@@ -106,6 +126,22 @@ export default function ProjectAutodesk() {
         <div className="mt-8 rounded-lg border border-amber-200 bg-amber-50 p-6">
           <div className="font-semibold text-amber-900">Autodesk account not connected</div>
           <p className="text-sm text-amber-800 mt-1">Connect your Autodesk account once, then come back to link a project.</p>
+          <div className="mt-4 rounded-md bg-white/70 border border-amber-200 p-3">
+            <div className="text-[11px] uppercase tracking-widest text-amber-900 font-semibold mb-1.5">
+              <AlertTriangle size={12} className="inline mr-1" /> Before connecting, register this callback URL in your APS app
+            </div>
+            <div className="flex items-center gap-2">
+              <code data-testid="callback-url" className="text-[11px] break-all text-slate-700 flex-1">{status.callback_url}</code>
+              <button data-testid="copy-callback-btn"
+                onClick={() => { navigator.clipboard?.writeText(status.callback_url); toast.success("Callback URL copied"); }}
+                className="h-8 px-2 rounded border border-amber-300 text-amber-900 text-xs hover:bg-amber-100 flex items-center gap-1">
+                <Copy size={12} /> Copy
+              </button>
+            </div>
+            <div className="text-[11px] text-amber-800 mt-2">
+              aps.autodesk.com → My Apps → your app → Callback URL. Without it Autodesk shows a “request error” after sign-in.
+            </div>
+          </div>
           <Link data-testid="goto-integrations" to="/integrations"
             className="inline-flex mt-4 h-10 px-5 items-center gap-2 rounded-md bg-slate-900 text-white text-sm hover:bg-slate-800">
             <Link2 size={14} /> Connect Autodesk
@@ -134,6 +170,42 @@ export default function ProjectAutodesk() {
               </button>
             </div>
           </motion.div>
+
+          <div className="mt-6 rounded-lg border border-slate-200 bg-white p-6">
+            <div className="flex items-start gap-4">
+              <div className="w-11 h-11 rounded-md bg-slate-100 grid place-items-center text-slate-700"><UploadCloud size={20} /></div>
+              <div className="flex-1 min-w-0">
+                <div className="font-semibold text-slate-900">Push SmartScape outputs to Autodesk</div>
+                <div className="text-sm text-slate-500 mt-1">
+                  Uploads the Design Brief PDF{project.boundary ? ", the site boundary GeoJSON" : ""} and the zoning GeoJSON
+                  into <span className="font-medium text-slate-700">{linked.aps_project_name}</span>. Re-pushing creates a new version.
+                </div>
+                {linked.last_pushed_at && (
+                  <div data-testid="last-pushed" className="text-xs text-slate-500 mt-1">
+                    Last pushed: {new Date(linked.last_pushed_at).toLocaleString()}
+                  </div>
+                )}
+              </div>
+              <button data-testid="autodesk-push-btn" onClick={pushToAutodesk} disabled={pushing}
+                className="h-10 px-5 rounded-md bg-emerald-600 text-white text-sm font-medium hover:bg-emerald-700 disabled:opacity-60 flex items-center gap-2">
+                {pushing ? <Loader2 size={14} className="animate-spin" /> : <UploadCloud size={14} />}
+                {pushing ? "Uploading…" : "Push to Autodesk"}
+              </button>
+            </div>
+            {pushResults && (
+              <div data-testid="push-results" className="mt-4 border-t border-slate-200 pt-3 space-y-1.5">
+                {pushResults.map((r) => (
+                  <div key={r.name} className="flex items-center gap-2 text-sm">
+                    {r.ok ? <CheckCircle2 size={14} className="text-emerald-600" /> : <AlertTriangle size={14} className="text-red-500" />}
+                    <span className="text-slate-900 font-medium">{r.name}</span>
+                    <span className="text-xs text-slate-500">
+                      {r.ok ? `${r.mode === "new_version" ? "new version" : "created"} · ${r.size_kb} KB` : r.error}
+                    </span>
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
 
           <div className="mt-6 rounded-lg border border-slate-200 bg-white">
             <div className="px-4 py-3 border-b border-slate-200 text-sm font-semibold text-slate-900 flex items-center gap-2">

@@ -1,10 +1,11 @@
 import { useEffect, useRef, useState } from "react";
 import { useParams, useSearchParams, Link } from "react-router-dom";
 import { motion, AnimatePresence } from "framer-motion";
-import { X, Layers, Info, Upload, Trash2, Loader2, Satellite } from "lucide-react";
+import { X, Layers, Info, Upload, Trash2, Loader2, Satellite, SlidersHorizontal, Check, RotateCcw } from "lucide-react";
 import { toast } from "sonner";
 import { api } from "@/lib/api";
 import MapView, { BASEMAPS } from "@/components/MapView";
+import { LandUseBar } from "@/components/LandUseBar";
 
 const LAYER_KEYS = [
   { key: "zones", label: "Zoning Overlays", color: "#059669" },
@@ -23,10 +24,17 @@ export default function ZoningMap() {
   const [uploading, setUploading] = useState(false);
   const fileRef = useRef(null);
   const [layers, setLayers] = useState({ zones: true, boundary: true, schools: true, hospitals: true, parks: true });
+  const [editing, setEditing] = useState(false);
+  const [alloc, setAlloc] = useState(null);
+  const [preview, setPreview] = useState(null);
+  const [saving, setSaving] = useState(false);
+
+  const readAlloc = (p) => Object.fromEntries(p.zones.map((z) => [z.type, z.percentage]));
 
   useEffect(() => {
     api.get(`/projects/${id}`).then(r => {
       setProject(r.data);
+      setAlloc(readAlloc(r.data));
       const zoneId = sp.get("zone");
       if (zoneId) {
         const z = r.data.zones.find(z => z.id === zoneId);
@@ -35,6 +43,37 @@ export default function ZoningMap() {
     });
   }, [id]);
 
+  useEffect(() => {
+    if (!editing || !alloc) return;
+    const t = setTimeout(() => {
+      api.post(`/projects/${id}/zoning`, { allocations: alloc, persist: false })
+        .then((r) => setPreview(r.data))
+        .catch(() => {});
+    }, 250);
+    return () => clearTimeout(t);
+  }, [alloc, editing, id]);
+
+  const applyAlloc = async () => {
+    setSaving(true);
+    try {
+      await api.post(`/projects/${id}/zoning`, { allocations: alloc, persist: true });
+      const { data } = await api.get(`/projects/${id}`);
+      setProject(data); setAlloc(readAlloc(data)); setPreview(null); setEditing(false);
+      toast.success(`Land use saved — score ${data.score.overall}/100`);
+    } catch (e) { toast.error(e?.response?.data?.detail || "Could not save land use"); }
+    finally { setSaving(false); }
+  };
+
+  const resetAlloc = async () => {
+    setSaving(true);
+    try {
+      const { data } = await api.post(`/projects/${id}/zoning/reset`);
+      setProject(data); setAlloc(readAlloc(data)); setPreview(null); setEditing(false);
+      toast.success("Reset to recommended land use");
+    } catch { toast.error("Reset failed"); }
+    finally { setSaving(false); }
+  };
+
   const uploadBoundary = async (file) => {
     if (!file) return;
     setUploading(true);
@@ -42,6 +81,7 @@ export default function ZoningMap() {
       const geojson = JSON.parse(await file.text());
       const { data } = await api.put(`/projects/${id}/boundary`, { geojson, source_name: file.name });
       setProject(data);
+      setAlloc(readAlloc(data));
       setSelected(null);
       toast.success(`Boundary applied — ${data.site_area_sqkm} sq.km, zones re-cut to your plot`);
     } catch (e) {
@@ -57,6 +97,7 @@ export default function ZoningMap() {
     try {
       const { data } = await api.delete(`/projects/${id}/boundary`);
       setProject(data);
+      setAlloc(readAlloc(data));
       setSelected(null);
       toast.success("Boundary removed — reverted to generated zone blocks");
     } catch { toast.error("Failed to remove boundary"); }
@@ -65,10 +106,16 @@ export default function ZoningMap() {
 
   if (!project) return <div className="p-8 text-slate-500">Loading map…</div>;
 
+  const shown = preview ? { ...project, ...preview } : project;
+  const colors = Object.fromEntries(project.zones.map((z) => [z.type, z.color]));
+  const order = project.zones.map((z) => z.type);
+  const total = alloc ? Math.round(Object.values(alloc).reduce((a, b) => a + b, 0) * 10) / 10 : 100;
+  const scoreDelta = preview ? Math.round((preview.score.overall - project.score.overall) * 10) / 10 : 0;
+
   return (
     <div className="h-[calc(100vh-3.5rem)] relative">
       {/* Map */}
-      <MapView project={project} onZoneClick={setSelected} selectedZoneId={selected?.id} layers={layers} basemap={basemap} />
+      <MapView project={shown} onZoneClick={setSelected} selectedZoneId={selected?.id} layers={layers} basemap={basemap} />
 
       {/* Left overlay: header */}
       <div className="absolute top-4 left-16 z-[500] glass rounded-md px-4 py-3 max-w-md">
@@ -131,16 +178,61 @@ export default function ZoningMap() {
         </div>
       </div>
 
-      {/* Legend */}
-      <div className="absolute bottom-4 left-4 z-[500] glass rounded-md p-3">
-        <div className="overline text-[10px] mb-2">Zone Legend</div>
-        <div className="grid grid-cols-2 gap-x-4 gap-y-1">
-          {project.zones.map(z => (
-            <div key={z.id} className="flex items-center gap-2 text-xs">
-              <div className="w-3 h-3 rounded-sm" style={{ background: z.color }} />
-              <div className="text-slate-700">{z.name}</div>
+      {/* Legend + land use editor */}
+      <div className="absolute bottom-4 left-4 right-4 z-[500] flex items-end gap-3 pointer-events-none">
+        <div className="glass rounded-md p-3 pointer-events-auto">
+          <div className="overline text-[10px] mb-2">Zone Legend</div>
+          <div className="grid grid-cols-2 gap-x-4 gap-y-1">
+            {shown.zones.map(z => (
+              <div key={z.id} className="flex items-center gap-2 text-xs">
+                <div className="w-3 h-3 rounded-sm" style={{ background: z.color }} />
+                <div className="text-slate-700">{z.name}</div>
+              </div>
+            ))}
+          </div>
+        </div>
+
+        <div className="glass rounded-md p-4 flex-1 max-w-3xl pointer-events-auto">
+          <div className="flex items-center justify-between mb-3">
+            <div className="flex items-center gap-2">
+              <SlidersHorizontal size={14} className="text-emerald-600" />
+              <div className="text-sm font-semibold">Land Use Mix</div>
+              <div data-testid="alloc-total" className={`text-[11px] font-semibold ${Math.abs(total - 100) > 0.6 ? "text-red-600" : "text-slate-500"}`}>
+                {total}%
+              </div>
             </div>
-          ))}
+            <div className="flex items-center gap-2">
+              <div data-testid="live-score" className="text-xs text-slate-600">
+                Score <span className="font-display font-bold text-slate-900">{shown.score.overall}</span>/100
+                {preview && scoreDelta !== 0 && (
+                  <span className={scoreDelta > 0 ? "text-emerald-600 ml-1 font-semibold" : "text-red-600 ml-1 font-semibold"}>
+                    {scoreDelta > 0 ? "+" : ""}{scoreDelta}
+                  </span>
+                )}
+              </div>
+              {!editing ? (
+                <button data-testid="edit-landuse-btn" onClick={() => setEditing(true)}
+                  className="h-8 px-3 rounded-md bg-slate-900 text-white text-xs hover:bg-slate-800">Edit land use</button>
+              ) : (
+                <>
+                  <button data-testid="apply-landuse-btn" disabled={saving || Math.abs(total - 100) > 0.6} onClick={applyAlloc}
+                    className="h-8 px-3 rounded-md bg-emerald-600 text-white text-xs hover:bg-emerald-700 disabled:opacity-50 flex items-center gap-1.5">
+                    {saving ? <Loader2 size={12} className="animate-spin" /> : <Check size={12} />} Apply
+                  </button>
+                  <button data-testid="reset-landuse-btn" disabled={saving} onClick={resetAlloc}
+                    className="h-8 px-3 rounded-md border border-slate-300 text-xs hover:bg-white flex items-center gap-1.5">
+                    <RotateCcw size={12} /> Reset
+                  </button>
+                  <button data-testid="cancel-landuse-btn" onClick={() => { setEditing(false); setPreview(null); setAlloc(readAlloc(project)); }}
+                    className="h-8 px-2 rounded-md text-slate-500 hover:text-slate-900 text-xs">Cancel</button>
+                </>
+              )}
+            </div>
+          </div>
+          {alloc && <LandUseBar order={order} alloc={alloc} colors={colors} onChange={setAlloc} disabled={!editing} />}
+          <div className="mt-2 text-[10px] uppercase tracking-widest text-slate-500">
+            {editing ? "Drag the white dividers to shift share between neighbouring zones — map and score update live" : "Recommended URDPFI-inspired mix"}
+          </div>
         </div>
       </div>
 
