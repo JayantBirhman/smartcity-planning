@@ -1,0 +1,26 @@
+{
+  "summary": "Second testing_agent run for SmartScape covering the new features: GeoJSON site-boundary upload/remove, Autodesk hub-project link/unlink/sync, and realistic map (satellite/streets/terrain basemap switcher + live-location control + click-to-pin New Project preview). Extended /app/backend/tests/backend_test.py with 11 new tests (TestBoundary x7, TestAutodeskLink x4) — total 35/35 pass. Frontend flows validated end-to-end (demo login -> project map -> boundary upload/remove -> zone click -> basemap switch -> live-location -> Autodesk sync page not-connected -> New Project location picker -> Blueprint PDF button) with 0 console errors and 0 pageerrors.",
+  "backend_issues": {"critical": [], "minor": []},
+  "frontend_issues": {"ui_bugs": [], "integration_issues": [], "design_issues": []},
+  "test_report_links": ["/app/backend/tests/backend_test.py", "/app/test_reports/pytest/pytest_results.xml"],
+  "action_items": [],
+  "critical_code_review_comments": [
+    "server.py is now ~950 lines including the shapely geometry section — recommend splitting into modules (auth.py, autodesk.py, planning.py, geometry.py, projects.py) for maintainability. Threshold from previous iteration is now exceeded.",
+    "PUT /projects/{pid}/boundary returns the raw Mongo document via find_one — code correctly uses {'_id': 0} projection, verified. Same for DELETE.",
+    "extract_boundary() gracefully handles FeatureCollection, Feature, bare Polygon, MultiPolygon and GeometryCollection — verified with tests. Non-polygon geometry raises HTTP 400 as required.",
+    "build_geometry_from_boundary() zone-area sum verified within 5% of computed site_area_sqkm (rounding tolerance).",
+    "link_autodesk correctly invokes get_aps_access_token() to gate on 409 before storing the link — verified.",
+    "linked_autodesk_contents surfaces upstream Autodesk errors gracefully: fake token yields 409 'reconnect required' from aps_get, NOT a 500 — verified.",
+    "unlink is fully idempotent (uses $unset with no filter on autodesk existence) — verified with double-DELETE test.",
+    "New /projects/{pid}/boundary DELETE uses $unset on boundary + infra_points and rebuilds zones/sustainability/score from inputs.site_area_sqkm — verified reverting behavior with a follow-up assertion on inputs vs site_area_sqkm.",
+    "Zone polygons are stored as list-of-rings ([[lat,lng],...]) which matches the frontend MapView expectation."
+  ],
+  "updated_files": ["/app/backend/tests/backend_test.py"],
+  "success_rate": {"backend": "100% (35/35)", "frontend": "100% of tested flows"},
+  "test_credentials": "Demo login POST /api/auth/demo (demo@smartscape.ai / smartscape-demo). Fake APS token injected into db.aps_tokens for link test, cleaned up in finally.",
+  "seed_data_creation": "TestBoundary uses a module-scoped TEST_boundary_project created via API and torn down; TestAutodeskLink injects a bogus APS token doc for the demo user and cleans it up after each test.",
+  "retest_needed": false,
+  "main_agent_can_self_test": true,
+  "context_for_next_testing_agent": "Backend suite at /app/backend/tests/backend_test.py now covers auth (JWT + session + Google), Autodesk OAuth (status/connect-url/callback/hubs/hub-projects/link/unlink/contents), projects CRUD, chat, search, plus boundary (PUT/DELETE with FeatureCollection/Polygon/MultiPolygon/invalid/404/401) and Autodesk-link (409-not-connected, 404-no-link, idempotent unlink, fake-token-link + graceful-contents-failure). Real Autodesk OAuth still cannot be automated — link test uses a temporary db.aps_tokens injection. Frontend: all new data-testids present (boundary-status, boundary-file-input, boundary-upload-btn, boundary-remove-btn, basemap-satellite/streets/terrain, map-locate-btn, location-picker, project-autodesk-page, goto-integrations, sidebar-project-autodesk, blueprint-download-pdf). LocationPicker interactive click and Autodesk 'not connected' card verified.",
+  "rca of the issue": "No blocking bugs found."
+}

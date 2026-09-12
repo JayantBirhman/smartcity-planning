@@ -1,0 +1,38 @@
+{
+  "summary": "First testing_agent run for SmartScape. Comprehensive backend + frontend testing of the new Google (Emergent) auth + Autodesk APS 3-legged OAuth integration, plus regression on the rewritten Request-based auth dependency across all protected endpoints. 24/24 pytest tests pass. Frontend flows (demo login, Google button redirect, /integrations page, Autodesk connect redirect to signin.autodesk.com, error-query cleanup, all 7 project sub-pages, leaflet map with 52 interactive zones, blueprint PDF button) all work with 0 console errors.",
+  "backend_issues": {
+    "critical": [],
+    "minor": []
+  },
+  "frontend_issues": {
+    "ui_bugs": [],
+    "integration_issues": [],
+    "design_issues": [
+      {"screen": "Dashboard", "issues": ["Recharts warning: 'width(-1) and height(-1) of chart should be greater than 0' — cosmetic ResponsiveContainer sizing warning (not an error), fires several times on Dashboard/reports; consider setting minWidth/minHeight on ResponsiveContainer parents."]},
+      {"screen": "Sidebar", "issues": ["Sidebar label reads 'Autodesk Integration' while testid is 'sidebar-integrations' (works, but label could just be 'Integrations' to match the route/testid)."]},
+      {"screen": "Blueprint", "issues": ["'Download Design Brief (PDF)' button has no data-testid — add e.g. data-testid='blueprint-download-pdf' for testability."]}
+    ]
+  },
+  "test_report_links": ["/app/backend/tests/backend_test.py", "/app/test_reports/pytest/pytest_results.xml"],
+  "action_items": [
+    "(Optional) Add data-testid='blueprint-download-pdf' to the Blueprint page download button.",
+    "(Optional) Fix Recharts ResponsiveContainer warnings by giving parents an explicit min height."
+  ],
+  "critical_code_review_comments": [
+    "server.py is ~705 lines — still manageable but approaching the 700-line threshold; consider splitting auth, autodesk, planning-engine and projects into modules if it grows further.",
+    "extract_token()/get_current_user() are correct: cookie is preferred over Authorization header, JWT is tried first and falls back to session_token lookup. Cookie is set with SameSite=None + Secure which is required for the cross-site session flow.",
+    "google_session() correctly upserts by session_token (idempotent) and issues httponly cookie; returns the raw session_token as 'token' so the SPA can also use bearer.",
+    "autodesk_callback() safely handles invalid/missing state by redirecting to `?autodesk=error` — verified.",
+    "In demo_login() line 308 there is a dead-code ternary `bcrypt.hashpw(b'smartscape-demo').decode() if False else bcrypt.hashpw(b'smartscape-demo', bcrypt.gensalt()).decode()` — cleanup, keep only the else branch.",
+    "`aps_get()` maps upstream 401 to 409 'reconnect required' — good UX. But other 4xx are surfaced with raw Autodesk text; consider redacting sensitive parts.",
+    "chat endpoint gracefully falls back if emergentintegrations is unavailable — verified working."
+  ],
+  "updated_files": ["/app/backend/tests/backend_test.py"],
+  "success_rate": {"backend": "100% (24/24)", "frontend": "100% of critical flows"},
+  "test_credentials": "Demo: demo@smartscape.ai / smartscape-demo via POST /api/auth/demo. Real Google + real Autodesk login cannot be automated; verified redirect targets and 401/409 error paths only.",
+  "seed_data_creation": "Tests create a TEST_ user + user_sessions doc directly in Mongo to validate cookie/bearer session auth and expired-session 401, then tear down. A TEST_project_regression is created via API and deleted at end.",
+  "retest_needed": false,
+  "main_agent_can_self_test": true,
+  "context_for_next_testing_agent": "Backend regression suite lives at /app/backend/tests/backend_test.py — run with `pytest backend/tests/backend_test.py -v --junitxml=/app/test_reports/pytest/pytest_results.xml`. Covers: /api/auth/{demo,login,register,me,google/session,logout}, /api/autodesk/{status,connect-url,callback,hubs,hubs/{id}/projects}, /api/projects CRUD, /api/chat, /api/search. Real Google/Autodesk interactive login are NOT tested — only the redirect URL shape and the 401/409 error paths. Frontend: Google button navigates to auth.emergentagent.com/oauth/?redirect=<origin>/dashboard (the Emergent host adds /oauth/ suffix — this is expected). Autodesk connect click redirected to signin.autodesk.com (request-error page because state has no real user session in that browser, but the redirect out of our app worked correctly).",
+  "rca of the issue": "No blocking bugs found."
+}

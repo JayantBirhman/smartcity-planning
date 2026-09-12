@@ -1,0 +1,123 @@
+{
+  "theme": "light",
+  "typography": {
+    "headings": {
+      "family": "Manrope",
+      "weights": ["600", "800"],
+      "usage": "Use for all H1-H4 headings, KPI numbers, and architectural labels.",
+      "letter_spacing": "tracking-tight"
+    },
+    "body": {
+      "family": "IBM Plex Sans",
+      "weights": ["400", "500"],
+      "usage": "Use for dense dashboard data, tooltips, and map legends.",
+      "letter_spacing": "tracking-normal"
+    },
+    "rules": [
+      "NEVER use Inter, Roboto, or Open Sans for headings.",
+      "Overlines and small labels MUST be uppercase, text-xs, tracking-[0.2em] with font-semibold.",
+      "Max H1 size is text-5xl or text-6xl (clamp). Do not use text-7xl+.",
+      "Line height: leading-none for headings, leading-relaxed for body."
+    ]
+  },
+  "colors": {
+    "archetype": "Swiss & High-Contrast mixed with Organic (Architectural)",
+    "palette": {
+      "background": "#F8FAFC",
+      "surface": "#FFFFFF",
+      "primary": "#0F172A",
+      "accent": "#059669",
+      "accent_light": "#10B981",
+      "border": "#E2E8F0",
+      "text_main": "#0F172A",
+      "text_muted": "#64748B",
+      "zoning": {
+        "residential": "#FBBF24",
+        "commercial": "#F87171",
+        "industrial": "#A78BFA",
+        "green_space": "#34D399",
+        "institutional": "#60A5FA"
+      }
+    },
+    "rules": [
+      "CRITICAL: Do NOT use teal green/blue (#1B93A4). Use the Emerald/Moss green (#059669) as the accent.",
+      "Use #0F172A (Deep Navy) as the primary driving color for structural elements and typography.",
+      "Backgrounds must be pristine white or slate-50. Avoid dark mode unless specifically toggled for the map view.",
+      "Do not use full-screen gradients. Keep it flat, clean, and architectural."
+    ]
+  },
+  "visual_enhancers": {
+    "surfaces": "Grid Borders ('The Technical Look'). Expose the skeleton. Dashboards should use border-collapse style layouts with 1px subtle borders (border-border/60). Avoid heavy card drop-shadows. Use flat, crisp edges.",
+    "glassmorphism": "Use 'Crystal Glass' ONLY for the floating AI Chatbot widget, sticky headers, or map overlay panels. Must have backdrop-blur-xl, bg-white/80, and a 1px solid white/border-slate-200 edge.",
+    "patterns": "Use SVG grid dot patterns (text-slate-200) for the landing page hero background and auth screens to simulate architectural blueprints.",
+    "shadows": "Minimal. Use shadow-sm for active states, or a sharp 4px offset shadow (neo-brutalist lite) for primary buttons to give physical depth."
+  },
+  "layouts": {
+    "dashboard_grid": "High Density Grid. grid-cols-1 md:grid-cols-3 lg:grid-cols-4 or 12-col bento grid. gap-4 or gap-6. Every pixel utilized.",
+    "map_layout": "Full bleed or large constrained container with floating UI panels overlapping the map.",
+    "spacing": "Generous on landing/auth (p-12, py-24). Dense but structured on dashboards (p-4 to p-6 inside cards).",
+    "alignment": "Left-align dense content and forms. Optical alignment over mathematical."
+  },
+  "components": {
+    "buttons": "Pill-shaped or sharp slightly-rounded (rounded-md). Primary buttons use Deep Navy bg with white text. Accent buttons use Emerald Green. Include hover state with slight translate-y and increased shadow.",
+    "cards": "Cardless or flat cards. 1px border-slate-200, bg-white, no shadow by default. Hover adds shadow-md.",
+    "inputs": "Shadcn based. border-slate-300, focus:ring-2 focus:ring-emerald-500/20 focus:border-emerald-500.",
+    "map": "Leaflet + OpenStreetMap tiles. Overlay with interactive SVG/GeoJSON polygons colored by zoning type. Clickable zones trigger a side-panel (glassmorphic) with area/capacity data.",
+    "ai_chatbot": "Floating widget (bottom right). Glassmorphism surface. Chat bubbles should differentiate user (Navy) and AI (white/gray) with subtle green accents for AI.",
+    "header": "Sticky top, solid bg-white or heavy glassmorphism. Never fully transparent if content scrolls beneath.",
+    "score_rings": "Use Recharts or SVG circular progress indicators for Composite/Sustainability scores. Deep Navy track with Emerald progress."
+  },
+  "motion": {
+    "page_transitions": "Framer motion fade and slight slide-up (y: 10, opacity: 0 to 1).",
+    "hover_states": "Buttons and interactive map zones must scale up slightly (scale: 1.02) or change border/fill color instantly.",
+    "data_loading": "Use skeleton loaders matching the architectural grid rather than spinning wheels.",
+    "rules": "Respect prefers-reduced-motion. Do not use 'transition: all'."
+  },
+  "accessibility": {
+    "contrast": "Ensure text over map or colored zones has sufficient contrast. Use APCA standards.",
+    "focus": "focus-visible:ring-2 focus-visible:ring-offset-2 focus-visible:ring-emerald-500 on all interactive elements.",
+    "testing": "All interactive elements MUST include a `data-testid` attribute (e.g., `data-testid=\"map-zone-residential\"`)."
+  },
+  "media": {
+    "image_urls": {
+      "landing_hero_bg": "https://images.unsplash.com/photo-1669144157534-08f689a4135c?crop=entropy&cs=srgb&fm=jpg&ixid=M3w4NTYxODF8MHwxfHNlYXJjaHw0fHxtb2Rlcm4lMjBjaXR5JTIwZ3JpZCUyMGFlcmlhbCUyMHZpZXd8ZW58MHx8fHwxNzg5MTQ2MzMyfDA&ixlib=rb-4.1.0&q=85",
+      "auth_side_image": "https://images.unsplash.com/photo-1499669478454-6f140f73d5de?crop=entropy&cs=srgb&fm=jpg&ixid=M3w4NTYxODF8MHwxfHNlYXJjaHwzfHxtb2Rlcm4lMjBjaXR5JTIwZ3JpZCUyMGFlcmlhbCUyMHZpZXd8ZW58MHx8fHwxNzg5MTQ2MzMyfDA&ixlib=rb-4.1.0&q=85",
+      "blueprint_abstract": "https://images.unsplash.com/photo-1483959651481-dc75b89291f1?crop=entropy&cs=srgb&fm=jpg&ixid=M3w4NjY2NzV8MHwxfHNlYXJjaHwxfHxhYnN0cmFjdCUyMGFyY2hpdGVjdHVyYWwlMjBibHVlcHJpbnR8ZW58MHx8fHwxNzg5MTQ2MzMyfDA&ixlib=rb-4.1.0&q=85",
+      "urban_planner_team": "https://images.unsplash.com/photo-1503387762-592deb58ef4e?crop=entropy&cs=srgb&fm=jpg&ixid=M3w4NjAzOTB8MHwxfHNlYXJjaHwxfHx1cmJhbiUyMHBsYW5uZXIlMjBhcmNoaXRlY3QlMjB3b3JraW5nfGVufDB8fHx8MTc4OTE0NjMzMnww&ixlib=rb-4.1.0&q=85"
+    }
+  },
+  "libraries": {
+    "map": "react-leaflet, leaflet",
+    "icons": "lucide-react",
+    "charts": "recharts",
+    "animations": "framer-motion",
+    "notifications": "sonner"
+  },
+  "instructions_to_main_agent": [
+    "Build a premium, high-performance urban planning dashboard (SmartScape).",
+    "The overall vibe is 'Architectural SaaS' - clean lines, plenty of whitespace, 1px borders, deep navy and emerald accents.",
+    "Use react-leaflet for the main Interactive Map. Overlay it with clickable SVG polygons representing zoning (residential, commercial, green space, etc.). The map needs to look professional (use a clean OSM tile style if possible).",
+    "Implement the multi-step New Planning Project workflow with a clear progress indicator.",
+    "Implement Shadcn UI components for dropdowns, forms, buttons, and tables, customizing them to fit the flat/grid technical style (remove heavy shadows, keep borders crisp).",
+    "Do NOT use HTML input type='date' or generic <select>; use Shadcn versions.",
+    "In the Dashboard, use Recharts for Sustainability radial charts and infrastructure metrics.",
+    "The Floating AI Chatbot should be a fixed widget with a glassmorphism container.",
+    "Provide a 'Demo Login' button on the Auth pages that auto-fills and submits.",
+    "Create realistic Indian urban-planning demo data for the map zones, proposals, and KPIs."
+  ],
+  "UNIVERSAL_GUIDELINES_FOR_MAIN_AGENT": [
+    "You tend to converge toward generic, 'on distribution' outputs. Avoid this: make creative, distinctive frontends that surprise and delight.",
+    "Dark colors look good when used independently without gradients. DO NOT use dark colors as gradients.",
+    "Don't make generic centered layouts, simplistic gradients, and uniform styling.",
+    "Create depth through layered design elements with z-index hierarchy.",
+    "Use glass-morphism effects with backdrop filters (12-24px blur) only where appropriate (like overlays).",
+    "You MUST NOT apply universal transition (e.g., transition: all). Always add transitions for specific properties.",
+    "You MUST NOT center align the app container, i.e., do not add .App { text-align: center; }.",
+    "Always use modern button styles with interaction animations.",
+    "NEVER use AI assistant Emoji characters like 🤖🧠💭💡🔮🎯 etc. for icons. Use lucide-react.",
+    "Every interaction needs micro-animations - hover states, transitions, entrance animations. Static = dead.",
+    "Use generous spacing. Cramped designs look cheap.",
+    "All interactive and key informational elements MUST include a data-testid attribute.",
+    "NEVER use placeholder image URLs (like via.placeholder.com). Use the provided image_urls."
+  ]
+}
